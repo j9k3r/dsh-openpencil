@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { Readable } from 'node:stream'
+import { request } from 'node:http'
+import { text } from 'node:stream/consumers'
 import { pipeline } from 'node:stream/promises'
 
 // The pinned web shell uses root-relative URLs for its daemon API and CanvasKit.
@@ -65,24 +66,26 @@ export async function serveCanvas(req: IncomingMessage, res: ServerResponse, ses
   const url = new URL(session.iframeUrl)
   url.pathname = path
   url.search = search
-  const abort = new AbortController()
-  res.once('close', () => abort.abort())
-  const upstream = await fetch(url, {
-    method, headers, signal: abort.signal, redirect: 'error',
-    ...(method === 'POST' ? { body: Readable.toWeb(req) as ReadableStream<Uint8Array>, duplex: 'half' as const } : {}),
+  url.searchParams.delete('tenant')
+  const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
+    const outbound = request(url, { method, headers }, resolve)
+    outbound.on('error', reject)
+    res.once('close', () => outbound.destroy())
+    if (method === 'POST') req.pipe(outbound)
+    else outbound.end()
   })
-  res.statusCode = upstream.status
-  res.setHeader('Content-Type', upstream.headers.get('content-type') ?? 'application/octet-stream')
+  res.statusCode = upstream.statusCode ?? 502
+  res.setHeader('Content-Type', upstream.headers['content-type'] ?? 'application/octet-stream')
   res.setHeader('Cache-Control', 'no-store')
   res.setHeader('Referrer-Policy', 'no-referrer')
   res.setHeader('X-Content-Type-Options', 'nosniff')
-  if (read && method !== 'HEAD' && path === '/' && upstream.ok) {
+  if (read && method !== 'HEAD' && path === '/' && res.statusCode === 200) {
     res.setHeader('Content-Security-Policy', "frame-ancestors 'self'; object-src 'none'; base-uri 'none'")
-    res.end((await upstream.text()).replace('<head>', '<head>' + routeBootstrap)
+    res.end((await text(upstream)).replace('<head>', '<head>' + routeBootstrap)
       .replace("import('/pkg/op_host_web.js')", "import('./pkg/op_host_web.js')"))
-  } else if (path.endsWith('/op_ck_bridge.js') && method === 'GET' && upstream.ok) {
-    res.end((await upstream.text()).replaceAll("'/canvaskit/", "'" + prefix + '/canvaskit/'))
-  } else if (upstream.body) {
-    await pipeline(Readable.fromWeb(upstream.body as import("node:stream/web").ReadableStream<Uint8Array>), res)
-  } else res.end()
+  } else if (path.endsWith('/op_ck_bridge.js') && method === 'GET' && res.statusCode === 200) {
+    res.end((await text(upstream)).replaceAll("'/canvaskit/", "'" + prefix + '/canvaskit/'))
+  } else {
+    await pipeline(upstream, res)
+  }
 }
