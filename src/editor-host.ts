@@ -11,6 +11,7 @@ import {
 import { constants as fsConstants } from 'node:fs'
 import { lstat, mkdtemp, open, rename, rm, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
+import { serveCanvas } from './editor-web-route.js'
 import { TLSSocket } from 'node:tls'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { managedEditorProcessOptions } from './managed-editor-process.js'
@@ -154,6 +155,7 @@ interface EditorSession {
   child: ChildProcessWithoutNullStreams
   iframeUrl: string
   daemonToken: string
+  browserToken: string
   refreshExpiresAt: number
   createdAt: number
   closed: boolean
@@ -170,6 +172,7 @@ interface LiveDraftEditorSession {
   attachId: string
   iframeUrl: string
   daemonToken: string
+  browserToken: string
   createdAt: number
   closed: boolean
 }
@@ -646,8 +649,26 @@ export class EditorHostController {
       // fence before resolving any bearer capability or session identifier so
       // a LAN client cannot spoof localhost to launch, refresh, read, mutate,
       // recover, or close a managed editor session.
-      requireLoopbackPeer(req)
+      const configured = process.env.DSH_OPENPENCIL_PUBLIC_ORIGIN
+      const remoteOrigin = configured && req.headers.host === new URL(configured).host ? configured : undefined
+      if (remoteOrigin) {
+        const site = req.headers['sec-fetch-site']
+        if (this.#requestAuthentication?.(req) !== true ||
+            (site && site !== 'same-origin' && site !== 'none') ||
+            (req.headers.origin !== undefined && req.headers.origin !== remoteOrigin) ||
+            (req.method !== 'GET' && req.method !== 'HEAD' && req.headers.origin !== remoteOrigin)) {
+          throw new HttpError(403, 'Authenticated same-origin Harness session required')
+        }
+      } else requireLoopbackPeer(req)
+      const originForControl = () => remoteOrigin ?? requestOrigin(req, this.#requestAuthentication)
       const url = new URL(req.url ?? '/', 'http://dsh.invalid')
+      const canvas = new RegExp(`^${EDITOR_ROUTE_PREFIX}/session/([A-Za-z0-9_-]{32})/canvas(/.*)$`).exec(url.pathname)
+      if (canvas && remoteOrigin) {
+        const session = this.#sessions.get(canvas[1]!) ?? this.#liveDraftSessions.get(canvas[1]!)
+        if (!session || session.closed) throw new HttpError(410, 'Editor session closed')
+        await serveCanvas(req, res, session, canvas[2]!, url.search, `${EDITOR_ROUTE_PREFIX}/session/${session.id}/canvas`)
+        return
+      }
       const launch = new RegExp(`^${EDITOR_ROUTE_PREFIX}/([A-Za-z0-9_.-]+)/launch$`).exec(url.pathname)
       const refresh = new RegExp(`^${EDITOR_ROUTE_PREFIX}/([A-Za-z0-9_.-]+)/refresh$`).exec(url.pathname)
       const legacyRefresh = url.pathname === `${EDITOR_ROUTE_PREFIX}/refresh`
@@ -673,28 +694,28 @@ export class EditorHostController {
         }
         const routeGeneration = this.#routeGeneration
         await this.#serializeLaunch(() => this.#launch(
-          launch[1]!, requestOrigin(req, this.#requestAuthentication), res, routeGeneration, ownerSessionId,
+          launch[1]!, originForControl(), res, routeGeneration, ownerSessionId,
         ))
         return
       }
       if (refresh !== null && req.method === 'POST') {
-        requestOrigin(req, this.#requestAuthentication)
+        originForControl()
         await readRequestBody(req).catch(() => Buffer.alloc(0))
         await this.#refresh(refresh[1]!, res)
         return
       }
       if (legacyRefresh && req.method === 'POST') {
-        requestOrigin(req, this.#requestAuthentication)
+        originForControl()
         await readRequestBody(req).catch(() => Buffer.alloc(0))
         throw new HttpError(410, 'This editor card predates restart-safe editing; open the .op file in a new editable OpenPencil card')
       }
       if (save !== null && req.method === 'POST') {
-        requestOrigin(req, this.#requestAuthentication)
+        originForControl()
         await this.#save(save[1]!, req, res)
         return
       }
       if (ready !== null && req.method === 'POST') {
-        requestOrigin(req, this.#requestAuthentication)
+        originForControl()
         const body = await readRequestBody(req)
         let sessionId: unknown
         try {
@@ -716,28 +737,28 @@ export class EditorHostController {
         return
       }
       if (recovery !== null && req.method === 'POST') {
-        requestOrigin(req, this.#requestAuthentication)
+        originForControl()
         await readRequestBody(req).catch(() => Buffer.alloc(0))
         const snapshot = await this.#captureRecoveryForSession(recovery[1]!, 'client-dispose')
         json(res, 200, { ok: true, recovery: snapshot ?? null })
         return
       }
       if (recoveryItem !== null && req.method === 'POST') {
-        requestOrigin(req, this.#requestAuthentication)
+        originForControl()
         await readRequestBody(req).catch(() => Buffer.alloc(0))
         const restored = await this.#restoreRecoveryForSession(recoveryItem[1]!, recoveryItem[2]!)
         json(res, 200, { ok: true, ...restored })
         return
       }
       if (recoveryItem !== null && req.method === 'DELETE') {
-        requestOrigin(req, this.#requestAuthentication)
+        originForControl()
         await readRequestBody(req).catch(() => Buffer.alloc(0))
         const discarded = await this.#discardRecoveryForSession(recoveryItem[1]!, recoveryItem[2]!)
         json(res, 200, { ok: true, discarded })
         return
       }
       if (close !== null && req.method === 'DELETE') {
-        requestOrigin(req, this.#requestAuthentication)
+        originForControl()
         await readRequestBody(req).catch(() => Buffer.alloc(0))
         await this.#close(close[1]!)
         json(res, 200, { ok: true })
@@ -745,6 +766,7 @@ export class EditorHostController {
       }
       json(res, 404, { ok: false, error: 'editor capability not found' })
     } catch (error) {
+      if (res.destroyed || res.headersSent) { res.destroy(); return }
       const status = error instanceof HttpError ? error.status : 500
       json(res, status, { ok: false, error: errorMessage(error) })
     }
@@ -1013,7 +1035,7 @@ export class EditorHostController {
         if (ownerSessionId === undefined || ownerSessionId !== capability.ownerSessionId) {
           throw new HttpError(403, 'live OpenPencil draft belongs to a different DSH session')
         }
-        await this.#launchLiveDraft(capability, res, routeGeneration, assertConnected)
+        await this.#launchLiveDraft(capability, origin, res, routeGeneration, assertConnected)
         return
       }
       const current = await readSourceDocument(capability.sourcePath)
@@ -1066,6 +1088,7 @@ export class EditorHostController {
           child,
           iframeUrl: `${baseUrl}/?embed=vscode`,
           daemonToken: handshake.token,
+          browserToken: randomBytes(32).toString('base64url'),
           refreshExpiresAt: capability.refreshExpiresAt,
           createdAt: Date.now(),
           closed: false,
@@ -1092,8 +1115,9 @@ export class EditorHostController {
         }
         json(res, 200, {
           sessionId: id,
-          iframeUrl: session.iframeUrl,
-          token: session.daemonToken,
+          iframeUrl: origin === process.env.DSH_OPENPENCIL_PUBLIC_ORIGIN
+            ? `${origin}${EDITOR_ROUTE_PREFIX}/session/${session.id}/canvas/?embed=vscode` : session.iframeUrl,
+          token: origin === process.env.DSH_OPENPENCIL_PUBLIC_ORIGIN ? session.browserToken : session.daemonToken,
           saveUrl: `${EDITOR_ROUTE_PREFIX}/session/${id}/save`,
           selectionUrl: `${EDITOR_ROUTE_PREFIX}/session/${id}/selection`,
           closeUrl: `${EDITOR_ROUTE_PREFIX}/session/${id}`,
@@ -1117,6 +1141,7 @@ export class EditorHostController {
 
   async #launchLiveDraft(
     capability: LiveDraftCapability,
+    origin: string,
     res: ServerResponse,
     routeGeneration: number,
     assertConnected: () => void,
@@ -1148,6 +1173,7 @@ export class EditorHostController {
         attachId: launch.attachId,
         iframeUrl: `${launch.baseUrl}/?embed=vscode`,
         daemonToken: launch.token,
+          browserToken: randomBytes(32).toString('base64url'),
         createdAt: Date.now(),
         closed: false,
       }
@@ -1155,8 +1181,9 @@ export class EditorHostController {
       this.#liveDraftSessions.set(session.id, session)
       json(res, 200, {
         sessionId: session.id,
-        iframeUrl: session.iframeUrl,
-        token: session.daemonToken,
+        iframeUrl: origin === process.env.DSH_OPENPENCIL_PUBLIC_ORIGIN
+            ? `${origin}${EDITOR_ROUTE_PREFIX}/session/${session.id}/canvas/?embed=vscode` : session.iframeUrl,
+        token: origin === process.env.DSH_OPENPENCIL_PUBLIC_ORIGIN ? session.browserToken : session.daemonToken,
         // Kept for the shared launch response contract. The live client hides
         // save and this route rejects writes to an unpublished pipeline draft.
         saveUrl: `${EDITOR_ROUTE_PREFIX}/session/${session.id}/save`,

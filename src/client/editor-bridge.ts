@@ -99,7 +99,9 @@ export function encodeEditorOutbound(message: EditorOutboundMessage): string {
 export function editorOrigin(iframeUrl: string): string {
   const url = new URL(iframeUrl)
   const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1'
-  if (!loopback || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
+  const routed = typeof window !== 'undefined' && url.origin === window.location.origin &&
+    /^\/_dsh\/dsh-openpencil\/editor\/session\/[A-Za-z0-9_-]{32}\/canvas\/$/.test(url.pathname)
+  if ((!loopback && !routed) || (url.protocol !== 'http:' && url.protocol !== 'https:')) {
     throw new Error('OpenPencil editor URL must use an HTTP loopback origin')
   }
   return url.origin

@@ -1326,3 +1326,26 @@ test('authenticated missing-Origin requests still require a canonical local Host
     await harness.cleanup()
   }
 })
+
+test('same-origin relay requires Harness admission, routes one launched editor and expires on close', async () => {
+  const h = await createHarness(0)
+  const previous = process.env.DSH_OPENPENCIL_PUBLIC_ORIGIN
+  process.env.DSH_OPENPENCIL_PUBLIC_ORIGIN = h.origin
+  try {
+    h.controller.attachRequestAuthentication(req => req.headers.cookie === 'session=test')
+    const headers = { cookie: 'session=test' }
+    assert.equal((await h.request(h.grant.launchUrl, { method: 'POST' })).status, 403)
+    const launch = await (await h.request(h.grant.launchUrl, { method: 'POST', headers })).json()
+    const frame = new URL(launch.iframeUrl)
+    assert.equal(frame.origin, h.origin)
+    assert.ok(frame.pathname.endsWith('/canvas/'))
+    assert.equal((await h.request(frame.pathname)).status, 403)
+    assert.equal((await h.request(frame.pathname, { headers })).status, 200)
+    await h.request(launch.closeUrl, { method: 'DELETE', headers })
+    assert.equal((await h.request(frame.pathname, { headers })).status, 410)
+  } finally {
+    if (previous === undefined) delete process.env.DSH_OPENPENCIL_PUBLIC_ORIGIN
+    else process.env.DSH_OPENPENCIL_PUBLIC_ORIGIN = previous
+    await h.cleanup()
+  }
+})
