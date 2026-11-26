@@ -1036,7 +1036,11 @@ export class EditorHostController {
       ])
       assertConnected()
 
-      const launch = await managedEditorProcessOptions(runtime, capability.sourcePath, origin)
+      const port = Number(process.env.DSH_OPENPENCIL_EDITOR_PORT ?? 0)
+      if (!Number.isInteger(port) || port < 0 || port > 65535) {
+        throw new Error('Invalid DSH_OPENPENCIL_EDITOR_PORT')
+      }
+      const launch = await managedEditorProcessOptions(runtime, capability.sourcePath, origin, port)
       const child = spawn(runtime.binary, launch.args, { stdio: ['pipe', 'pipe', 'pipe'], env: launch.env })
       launchChild = child
       this.#pendingChildren.add(child)
