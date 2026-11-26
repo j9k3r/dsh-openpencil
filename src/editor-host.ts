@@ -9,14 +9,14 @@ import {
   randomUUID,
 } from 'node:crypto'
 import { constants as fsConstants } from 'node:fs'
-import { lstat, mkdtemp, open, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, realpath, mkdtemp, open, rename, rm, writeFile } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { serveCanvas } from './editor-web-route.js'
 import { TLSSocket } from 'node:tls'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { managedEditorProcessOptions } from './managed-editor-process.js'
 import { tmpdir } from 'node:os'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import {
   callOpenPencilMcp,
   getOpenPencilMcpVersion,
@@ -551,7 +551,7 @@ export class EditorHostController {
   #disposePromise: Promise<void> | undefined
   #requestAuthentication: EditorRequestAuthentication | undefined
 
-  constructor(masterKey: Buffer, runtime?: EditorRuntime) {
+  constructor(masterKey: Buffer, runtime?: EditorRuntime, private readonly editableWorkspace?: (sessionId: string) => Promise<string | undefined>) {
     this.#editorKey = deriveEditorKey(masterKey)
     this.#recoveryStore = new EditorRecoveryStore(masterKey)
     let resolved = runtime
@@ -662,6 +662,24 @@ export class EditorHostController {
       } else requireLoopbackPeer(req)
       const originForControl = () => remoteOrigin ?? requestOrigin(req, this.#requestAuthentication)
       const url = new URL(req.url ?? '/', 'http://dsh.invalid')
+      if (url.pathname === EDITOR_ROUTE_PREFIX + '/workspace-file' && req.method === 'POST') {
+        originForControl()
+        if (this.#requestAuthentication?.(req) !== true) throw new HttpError(403, 'Harness sign-in required')
+        const input = JSON.parse((await readRequestBody(req)).toString('utf8'))
+        if (typeof input?.sessionId !== 'string' || typeof input.path !== 'string' ||
+            !input.path.toLowerCase().endsWith('.op')) throw new HttpError(400, 'Choose an OpenPencil document')
+        const workspace = await this.editableWorkspace?.(input.sessionId)
+        if (!workspace) throw new HttpError(403, 'An editable project session is required')
+        const root = await realpath(workspace)
+        const file = await realpath(resolve(root, input.path))
+        const rel = relative(root, file)
+        if (!rel || rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) throw new HttpError(403, 'File outside the session workspace')
+        const digest = sha256(await readSourceDocument(file))
+        const editor = this.grantFor(file, digest)
+        if (!editor) throw new HttpError(409, 'OpenPencil editor unavailable')
+        json(res, 200, { schemaVersion: 2, document: { path: file, url: '', sha256: digest }, editor })
+        return
+      }
       const canvas = new RegExp(`^${EDITOR_ROUTE_PREFIX}/session/([A-Za-z0-9_-]{32})/canvas(/.*)$`).exec(url.pathname)
       if (canvas && remoteOrigin) {
         const session = this.#sessions.get(canvas[1]!) ?? this.#liveDraftSessions.get(canvas[1]!)

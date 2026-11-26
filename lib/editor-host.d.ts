@@ -38,11 +38,12 @@ export declare function isLoopbackRemoteAddress(address: string | undefined): bo
 /** Owns opaque launch capabilities and all live managed editor children. */
 export declare class EditorHostController {
     #private;
+    private readonly editableWorkspace?;
     readonly runtime: EditorRuntime | undefined;
     readonly runtimeError: Error | undefined;
     readonly binary: string | undefined;
     readonly designDrafts: DesignDraftController;
-    constructor(masterKey: Buffer, runtime?: EditorRuntime);
+    constructor(masterKey: Buffer, runtime?: EditorRuntime, editableWorkspace?: ((sessionId: string) => Promise<string | undefined>) | undefined);
     get available(): boolean;
     get routeAvailable(): boolean;
     /** Bind optional Host authentication until its providing service is disposed. */

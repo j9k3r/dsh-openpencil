@@ -1081,6 +1081,11 @@ export function OpenPencilEditorPanel({ block, colorScheme, locale, sessionId }:
   />
 }
 
+interface FileMenuRegistry {
+  register(entry: { id: string; target: 'file'; order: number;
+    resolve(target: { sessionId: string; path: string }): { id: string; label: string; failureLabel: string; run(): Promise<void> }[] }): () => void
+}
+
 /** Required client services. */
 export const inject = ['slots', 'theme', 'locale']
 
@@ -1109,6 +1114,25 @@ export function apply(ctx: ClientContext): void {
       }
     }, 'dsh-openpencil: fallback editor workbench host')
   }
+  ctx.inject(['contextMenus'], menuCtx => menuCtx.effect(() => (menuCtx as ClientContext & { contextMenus: FileMenuRegistry }).contextMenus.register({
+    id: 'openpencil.edit-file', target: 'file', order: 90,
+    resolve: ({ sessionId, path }: { sessionId: string; path: string }) => {
+      if (!path.toLowerCase().endsWith('.op')) return []
+      const ru = ctx.locale.getLocale().active === 'ru'
+      return [{ id: 'editOpenPencil', label: ru ? 'Открыть в OpenPencil' : 'Open in OpenPencil',
+        failureLabel: ru ? 'Не удалось открыть макет' : 'Could not open the OpenPencil document',
+        run: async () => {
+          const response = await fetch('/_dsh/dsh-openpencil/editor/workspace-file', {
+            method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sessionId, path }),
+          })
+          const result = await response.json()
+          if (!response.ok) throw Error(result.error || 'OpenPencil unavailable')
+          if (!await editorWorkbenchHost?.open({ sessionId, grant: result })) throw Error('Editor is busy')
+        },
+      }]
+    },
+  }), 'dsh-openpencil: workspace file action'))
   const HostSyncedDesignRenderView = (props: ToolCallViewProps): React.JSX.Element => {
     const locale = useSyncExternalStore(subscribeLocale, getLocale, getLocale)
     return (

@@ -163,7 +163,7 @@ export interface DesignEditArgs {
   changes?: Record<string, JsonValue>
 }
 
-async function projectImage(workspace: string, input: string): Promise<string> {
+export async function projectImage(workspace: string, input: string): Promise<string> {
   const root = await realpath(workspace)
   const file = await realpath(resolve(root, input))
   const rel = relative(root, file)

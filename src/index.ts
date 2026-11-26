@@ -15,6 +15,7 @@
  * @module @zseven-w/dsh-openpencil
  */
 
+import { createDeckTool } from './deck-tool.js'
 import type { Context } from '@deepseek-ai/cordis'
 import type FileSystem from '@deepseek-ai/dsh-fs'
 import type { FsObservation, FsTarget } from '@deepseek-ai/dsh-fs'
@@ -214,7 +215,13 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
   const accessKey = await prepareRenderAccessKey()
   const controller = new RenderAccessController(accessKey)
   const viewerAssets = await prepareViewerAssets()
-  const editorHost = new EditorHostController(accessKey)
+  const editorHost = new EditorHostController(accessKey, undefined, async id => {
+    const query = ctx.get('sessionQuery') as { inspectSession<T>(id: string, read: (session: Session) => T): Promise<T> } | undefined
+    return query?.inspectSession(id, session => {
+      const policy = hostCtx.sandboxPolicy.resolve({ session })
+      return policy.mode === 'read-only' ? undefined : session.header.cwd
+    })
+  })
   const designDraftTools = createDesignDraftToolController(editorHost, {
     fs: hostCtx.fs,
     sandboxPolicy: hostCtx.sandboxPolicy,
@@ -275,6 +282,10 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     () => hostCtx.tools.register(createDesignEditTool(editorHost)),
     `dsh-openpencil: ${OPENPENCIL_EDIT_TOOL_NAME} tool`,
   ))
+  disposers.push(ctx.effect(() => hostCtx.tools.register(createDeckTool({
+    fs: hostCtx.fs, sandboxPolicy: hostCtx.sandboxPolicy,
+    observe: (target, observation, exec) => eventCtx.emit('fs/observed', target, observation, exec),
+  })), 'dsh-openpencil: presentation creation'))
   for (const tool of designDraftTools.createTools()) {
     disposers.push(ctx.effect(
       () => hostCtx.tools.register(tool),

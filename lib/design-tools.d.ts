@@ -18,5 +18,6 @@ export interface DesignEditArgs {
     imageFile?: string;
     changes?: Record<string, JsonValue>;
 }
+export declare function projectImage(workspace: string, input: string): Promise<string>;
 /** Patch one explicit node, or the single node the user selected. */
 export declare function createDesignEditTool(editorHost: EditorHostController): import("@deepseek-ai/dsh-tools").ToolDefinition;
