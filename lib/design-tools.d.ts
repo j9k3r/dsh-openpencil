@@ -15,7 +15,8 @@ export declare function createDesignCreateTool(editorHost: EditorHostController)
 export interface DesignEditArgs {
     path: string;
     nodeId?: string;
-    changes: Record<string, JsonValue>;
+    imageFile?: string;
+    changes?: Record<string, JsonValue>;
 }
 /** Patch one explicit node, or the single node the user selected. */
 export declare function createDesignEditTool(editorHost: EditorHostController): import("@deepseek-ai/dsh-tools").ToolDefinition;
