@@ -45,7 +45,7 @@ export interface CanvasRelaySession {
 
 /** Only a current server-owned editor can supply the upstream address. */
 export async function serveCanvas(req: IncomingMessage, res: ServerResponse, session: CanvasRelaySession,
-  path: string, search: string, prefix: string): Promise<void> {
+  path: string, search: string, prefix: string, readBody: (req: IncomingMessage) => Promise<Buffer>): Promise<void> {
   const method = req.method
   const read = method === 'GET' || method === 'HEAD'
   const api = /^\/api\/mcp\/([a-z-]+)$/.exec(path)?.[1]
@@ -67,12 +67,13 @@ export async function serveCanvas(req: IncomingMessage, res: ServerResponse, ses
   url.pathname = path
   url.search = search
   url.searchParams.delete('tenant')
+  const body = method === 'POST' ? await readBody(req) : undefined
+  if (body) headers['Content-Length'] = String(body.length)
   const upstream = await new Promise<IncomingMessage>((resolve, reject) => {
     const outbound = request(url, { method, headers }, resolve)
     outbound.on('error', reject)
     res.once('close', () => outbound.destroy())
-    if (method === 'POST') req.pipe(outbound)
-    else outbound.end()
+    outbound.end(body)
   })
   res.statusCode = upstream.statusCode ?? 502
   res.setHeader('Content-Type', upstream.headers['content-type'] ?? 'application/octet-stream')

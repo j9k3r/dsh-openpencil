@@ -666,7 +666,7 @@ export class EditorHostController {
       if (canvas && remoteOrigin) {
         const session = this.#sessions.get(canvas[1]!) ?? this.#liveDraftSessions.get(canvas[1]!)
         if (!session || session.closed) throw new HttpError(410, 'Editor session closed')
-        await serveCanvas(req, res, session, canvas[2]!, url.search, `${EDITOR_ROUTE_PREFIX}/session/${session.id}/canvas`)
+        await serveCanvas(req, res, session, canvas[2]!, url.search, `${EDITOR_ROUTE_PREFIX}/session/${session.id}/canvas`, readRequestBody)
         return
       }
       const launch = new RegExp(`^${EDITOR_ROUTE_PREFIX}/([A-Za-z0-9_.-]+)/launch$`).exec(url.pathname)

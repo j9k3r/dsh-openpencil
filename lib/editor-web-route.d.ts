@@ -5,4 +5,4 @@ export interface CanvasRelaySession {
     browserToken: string;
 }
 /** Only a current server-owned editor can supply the upstream address. */
-export declare function serveCanvas(req: IncomingMessage, res: ServerResponse, session: CanvasRelaySession, path: string, search: string, prefix: string): Promise<void>;
+export declare function serveCanvas(req: IncomingMessage, res: ServerResponse, session: CanvasRelaySession, path: string, search: string, prefix: string, readBody: (req: IncomingMessage) => Promise<Buffer>): Promise<void>;
